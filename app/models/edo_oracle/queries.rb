@@ -50,15 +50,24 @@ module EdoOracle
          email."EMAIL_PRIMARY" = 'Y')
     SQL
 
-    def self.where_course_term_updated_date(with_career_filter = true)
-      enroll_acad_career_filter = with_career_filter ? 'AND term2.ACAD_CAREER = enr."ACAD_CAREER"' : ''
+    def self.where_course_term
+      sql_clause = <<-SQL
+        AND term.ACAD_CAREER = crs."academicCareer-code"
+        AND term.STRM = sec."term-id"
+        AND CAST(crs."fromDate" AS DATE) <= term.TERM_END_DT
+        AND CAST(crs."toDate" AS DATE) >= term.TERM_END_DT
+      SQL
+      sql_clause
+    end
+
+    def self.where_course_term_updated_date
       sql_clause = <<-SQL
         AND crs."updatedDate" = (
           SELECT MAX(crs2."updatedDate")
           FROM SISEDO.API_COURSEV01_MVW crs2, SISEDO.EXTENDED_TERM_MVW term2
           WHERE crs2."cms-version-independent-id" = crs."cms-version-independent-id"
           AND crs2."displayName" = crs."displayName"
-          #{enroll_acad_career_filter}
+          AND term2.ACAD_CAREER = crs."academicCareer-code"
           AND term2.STRM = sec."term-id"
           AND (
             (
@@ -92,7 +101,7 @@ module EdoOracle
 
     def self.get_basic_people_attributes(up_to_1000_ldap_uids)
       safe_query <<-SQL
-        select pi.ldap_uid, trim(pi.first_name) as first_name, trim(pi.last_name) as last_name, 
+        select pi.ldap_uid, trim(pi.first_name) as first_name, trim(pi.last_name) as last_name,
           pi.email_address, pi.student_id, pi.affiliations, pi.person_type
         from sisedo.calcentral_person_info_vw pi
         where pi.ldap_uid in (#{up_to_1000_ldap_uids.collect { |id| id.to_i }.join(', ')})
@@ -193,13 +202,15 @@ module EdoOracle
           ENR.GRADE_MARK AS grade,
           ENR.GRADE_POINTS AS grade_points,
           ENR.GRADING_BASIS_CODE AS grading_basis,
+          ENR.INCLUDE_IN_GPA AS include_in_gpa,
           ENR.ACAD_CAREER,
           CASE
             WHEN ENR.CRSE_CAREER = 'LAW'
             THEN ENR.RQMNT_DESIGNTN
             ELSE NULL
           END AS RQMNT_DESIGNTN
-        FROM SISEDO.CLC_ENROLLMENTV00_VW enr
+        FROM SISEDO.EXTENDED_TERM_MVW term,
+             SISEDO.CLC_ENROLLMENTV00_VW enr
         JOIN SISEDO.CLASSSECTIONALLV01_MVW sec ON (
           enr."TERM_ID" = sec."term-id" AND
           enr."SESSION_ID" = sec."session-id" AND
@@ -210,10 +221,12 @@ module EdoOracle
           enr."CAMPUS_UID" = '#{person_id}'
           #{and_institution('enr')}
           AND enr."STDNT_ENRL_STATUS_CODE" != 'D'
+          #{where_course_term}
           #{where_course_term_updated_date}
         ORDER BY term_id DESC, #{CANONICAL_SECTION_ORDERING}
       SQL
     end
+
 
     def self.get_law_enrollment(person_id, academic_career, term, section, require_desig_code = nil)
       require_desig_field = require_desig_code.blank? ? 'NULL' : 'RD.DESCRFORMAL'
@@ -247,7 +260,8 @@ module EdoOracle
           sec."maxWaitlist" AS waitlist_limit,
           sec."startDate" AS start_date,
           sec."endDate" AS end_date
-        FROM SISEDO.ASSIGNEDINSTRUCTORV00_VW instr
+        FROM SISEDO.EXTENDED_TERM_MVW term,
+             SISEDO.ASSIGNEDINSTRUCTORV00_VW instr
         JOIN SISEDO.CLASSSECTIONALLV01_MVW sec ON (
           instr."term-id" = sec."term-id" AND
           instr."session-id" = sec."session-id" AND
@@ -258,7 +272,8 @@ module EdoOracle
         WHERE sec."status-code" IN ('A','S')
           #{in_term_where_clause}
           AND instr."campus-uid" = '#{person_id}'
-          #{where_course_term_updated_date(false)}
+          #{where_course_term}
+          #{where_course_term_updated_date}
         ORDER BY term_id DESC, #{CANONICAL_SECTION_ORDERING}
       SQL
     end
@@ -289,7 +304,7 @@ module EdoOracle
           AND sec."primary" = 'false'
           AND sec."term-id" = '#{term_id}'
           AND sec."primaryAssociatedSectionId" = '#{section_id}'
-          #{where_course_term_updated_date(false)}
+          #{where_course_term_updated_date}
         ORDER BY #{CANONICAL_SECTION_ORDERING}
       SQL
     end
@@ -378,7 +393,7 @@ module EdoOracle
         #{JOIN_SECTION_TO_COURSE}
         WHERE sec."term-id" = '#{term_id}'
           AND sec."id" IN (#{section_ids.collect { |id| id.to_i }.join(', ')})
-          #{where_course_term_updated_date(false)}
+          #{where_course_term_updated_date}
         ORDER BY #{CANONICAL_SECTION_ORDERING}
       SQL
     end
@@ -708,13 +723,15 @@ module EdoOracle
 
     def self.section_reserved_capacity_count(term_id, section_id)
       safe_query <<-SQL
-        SELECT COUNT(*) as reserved_seating_rules_count
-        FROM
-          SISEDO.CLC_CURRENT_RESERVE_CAPACITYV00_VW
-        WHERE
-          TERM_ID = '#{term_id}' AND
-          CLASS_NBR = '#{section_id}' AND
-          RESERVED_SEATS > 0
+        SELECT COUNT(*) AS reserved_seating_rules_count
+        FROM SISEDO.CLC_CURRENT_RESERVE_CAPACITYV00_VW A
+        WHERE A.TERM_ID = '#{term_id}' 
+          AND A.CLASS_NBR = '#{section_id}'
+          AND A.RESERVED_SEATS > 0
+          AND A.START_DATE = (SELECT MAX(B.START_DATE) FROM SISEDO.CLC_CURRENT_RESERVE_CAPACITYV00_VW B
+                              WHERE B.TERM_ID = A.TERM_ID
+                                AND B.CLASS_NBR = A.CLASS_NBR
+                                AND B.START_DATE <= SYSDATE)
       SQL
     end
 

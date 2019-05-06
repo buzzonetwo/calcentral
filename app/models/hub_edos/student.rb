@@ -1,73 +1,33 @@
 module HubEdos
-  class Student < Proxy
-
-    def initialize(options = {})
-      super(options)
-      @include_fields = options[:include_fields]
+  class Student
+    def initialize(uid)
+      @uid = uid
     end
 
-    def url
-      "#{@settings.base_url}/#{@campus_solutions_id}/all"
+    def max_terms_in_attendance
+      if statuses = student_data[:feed]['academicStatuses']
+        return statuses.collect {|s| s['termsInAttendance']}.sort.last
+      end
     end
 
-    def json_filename
-      'hub_student.json'
+    def student_academic_level
+      type_code = current_registration['academicCareer']['code'] == 'LAW' ? 'EOT' : 'BOT'
+      level = current_registration['academicLevels'].find {|al| al['type']['code'] == type_code }
+      level['level']['description']
     end
 
-    def build_feed(response)
-      transformed_response = filter_fields(transform_address_keys(super(response)), whitelist_fields)
-      {
-        'student' => transformed_response
-      }
+    private
+
+    def student_data
+      @student_data ||= HubEdos::V2::Student.new(user_id: @uid).get
     end
 
-    def empty_feed
-      {
-        'student' => {}
-      }
-    end
-
-    def transform_address_keys(student)
-      if student['addresses'].present?
-        student['addresses'].each do |address|
-          address['state'] = address.delete('stateCode')
-          address['postal'] = address.delete('postalCode')
-          address['country'] = address.delete('countryCode')
+    def current_registration
+      @current_registration ||= begin
+        if registrations = student_data[:feed]['registrations']
+          registrations.find { |r| r['term']['id'] == Berkeley::Terms.fetch.current.campus_solutions_id }
         end
       end
-      student
     end
-
-    def filter_fields(student, whitelisted_fields)
-      return student if whitelisted_fields.nil?
-      result = {}
-      student.keys.each do |field|
-        result[field] = student[field] if whitelisted_fields.include? field
-      end
-      result
-    end
-
-    # Restrict output to these fields to avoid caching and transferring unused portions of the upstream feed.
-    def whitelist_fields
-      nil
-    end
-
-    def unwrap_response(response)
-      students = super(response)
-      students.any? ? students[0] : {}
-    end
-
-    def wrapper_keys
-      %w(apiResponse response any students)
-    end
-
-    def process_response_after_caching(response)
-      response = super(response)
-      if @include_fields.present? && (fields_root = response.try(:[], :feed).try(:[], 'student')).present?
-        response[:feed]['student'] = filter_fields(fields_root, @include_fields)
-      end
-      response
-    end
-
   end
 end

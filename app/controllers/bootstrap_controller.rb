@@ -12,9 +12,9 @@ class BootstrapController < ApplicationController
   # check_reauthentication code.
   def index
     if @calcentral_config[:providedServices].include? 'calcentral'
-      render file: 'public/index-main.html'
+      render file: 'public/index-main.html', formats: [:html]
     else
-      render file: 'public/index-junction.html'
+      render file: 'public/index-junction.html', formats: [:html]
     end
   end
 
@@ -35,10 +35,6 @@ class BootstrapController < ApplicationController
     # so that an error gets thrown if postgres is dead.
     if !User::Data.database_alive?
       raise "CalCentral database is currently unavailable"
-    end
-    # so an error gets thrown if Oracle is dead.
-    if !CampusOracle::Queries.database_alive?
-      raise "Campus database is currently unavailable"
     end
   end
 
